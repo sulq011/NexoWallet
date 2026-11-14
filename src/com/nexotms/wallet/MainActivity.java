@@ -262,6 +262,11 @@ public class MainActivity extends Activity {
         updateDefCardLabel();
         renderMyCards();
         handleActivationLink(getIntent());
+
+        // جلب تلقائي للمحفظة عند الفتح — البطاقات تظهر بلا ضغط زر
+        if (!store.getToken().isEmpty()) {
+            fetchIssuerCards();
+        }
     }
 
     @Override

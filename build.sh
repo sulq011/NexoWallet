@@ -55,8 +55,8 @@ echo "== 2) aapt2 link (المانيفست + R.java) =="
   --manifest AndroidManifest.xml \
   --min-sdk-version 24 \
   --target-sdk-version 33 \
-  --version-code 7 \
-  --version-name 1.6 \
+  --version-code 8 \
+  --version-name 1.7 \
   --java "$B/gen" \
   "$B/res.zip"
 
