@@ -21,15 +21,17 @@ import java.util.List;
 
 /**
  * محفظة nexo-tms — محفظة حقيقية:
- * بطاقات المُصدر كبلاطات بنكية (اسم الحامل + آخر4 + الحالة) مع التوكنات
- * والتزويد وتحديد البطاقة الافتراضية للدفع — إضافة إلى بطاقات الدفع NFC.
+ * بلاطات بطاقات المُصدر باسم الحامل + البطاقة الافتراضية للدفع
+ * + التوكنات والتزويد + تجربة دفع على البطاقة الافتراضية بقرار المحرك
+ * + بطاقات الدفع NFC.
  */
 public class MainActivity extends Activity {
 
     private WalletStore store;
     private LinearLayout issuerList, myCardsList;
     private EditText hostEdit, tokenEdit, panEdit, expEdit, cvvEdit, holderEdit;
-    private TextView issuerStatus;
+    private EditText payAmountEdit;
+    private TextView issuerStatus, defCardLabel, payResult;
     private List<IssuerApi.IssuerCard> issuerCards = new ArrayList<IssuerApi.IssuerCard>();
 
     @Override
@@ -83,7 +85,35 @@ public class MainActivity extends Activity {
         issuerList.setOrientation(LinearLayout.VERTICAL);
         root.addView(issuerList);
 
-        // ===== 2) بطاقاتي للدفع NFC =====
+        // ===== 2) تجربة دفع على البطاقة الافتراضية =====
+        root.addView(section("🧾 تجربة دفع — البطاقة الافتراضية"));
+
+        defCardLabel = new TextView(this);
+        defCardLabel.setTextSize(13);
+        root.addView(defCardLabel);
+
+        payAmountEdit = new EditText(this);
+        payAmountEdit.setHint("المبلغ (مثال 25.00)");
+        payAmountEdit.setInputType(
+                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        root.addView(payAmountEdit);
+
+        Button payBtn = new Button(this);
+        payBtn.setText("تنفيذ تجربة الدفع");
+        root.addView(payBtn);
+        payBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                payTest();
+            }
+        });
+
+        payResult = new TextView(this);
+        payResult.setTextSize(13);
+        payResult.setPadding(0, px(6), 0, px(6));
+        root.addView(payResult);
+
+        // ===== 3) بطاقاتي للدفع NFC =====
         root.addView(section("📲 بطاقاتي للدفع NFC"));
 
         myCardsList = new LinearLayout(this);
@@ -133,6 +163,7 @@ public class MainActivity extends Activity {
                 + "تفعيل الدفع NFC: إعدادات الجهاز ← NFC ← Tap & pay ← اختر «محفظة nexo-tms».");
         root.addView(nfcHint);
 
+        updateDefCardLabel();
         renderMyCards();
     }
 
@@ -276,6 +307,104 @@ public class MainActivity extends Activity {
             });
             issuerList.addView(provBtn);
         }
+        updateDefCardLabel();
+    }
+
+    /** سطر البطاقة الافتراضية في قسم تجربة الدفع */
+    private void updateDefCardLabel() {
+        String defId = store.getDefaultIssuerCard();
+        for (IssuerApi.IssuerCard ic : issuerCards) {
+            if (ic.id.equals(defId)) {
+                String holder = (ic.holderName == null || ic.holderName.isEmpty())
+                        ? "" : (" — " + ic.holderName);
+                defCardLabel.setText("البطاقة الافتراضية: •••• " + ic.last4 + holder);
+                return;
+            }
+        }
+        defCardLabel.setText("لم تُحدد بطاقة افتراضية — اخترها من المحفظة أعلاه");
+    }
+
+    /** تجربة دفع: تمريرة عبر المُصدر ثم انتظار قرار المحرك في السجل */
+    private void payTest() {
+        final String host = hostEdit.getText().toString().trim();
+        final String token = tokenEdit.getText().toString().trim();
+        final String defId = store.getDefaultIssuerCard();
+        final IssuerApi.IssuerCard card = findCard(defId);
+        if (card == null) {
+            Toast.makeText(this, "اختر بطاقة افتراضية للدفع أولًا", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String amount = payAmountEdit.getText().toString().trim();
+        if (!amount.matches("\\d+(\\.\\d{1,2})?")) {
+            Toast.makeText(this, "أدخل مبلغًا صحيحًا مثل 25.00", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        payResult.setText("… تمريرة " + amount + " على •••• " + card.last4
+                + " — بانتظار قرار المحرك");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int before = countDecisions(host, token, defId);
+                final int http = IssuerApi.simulatePurchase(host, token, defId, amount);
+                IssuerApi.LogEntry decision = null;
+                if (http == 202) {
+                    for (int i = 0; i < 15; i++) {
+                        try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
+                        IssuerApi.LogResult lr = IssuerApi.fetchLog(host, token);
+                        int seen = 0;
+                        for (int k = 0; k < lr.entries.size(); k++) {
+                            if (defId.equals(lr.entries.get(k).cardId)) seen++;
+                        }
+                        if (seen > before) {
+                            for (int k = lr.entries.size() - 1; k >= 0; k--) {
+                                IssuerApi.LogEntry e = lr.entries.get(k);
+                                if (defId.equals(e.cardId)
+                                        && amount.equals(e.amount)) {
+                                    decision = e;
+                                    break;
+                                }
+                            }
+                            if (decision != null) break;
+                        }
+                    }
+                }
+                final IssuerApi.LogEntry dec = decision;
+                final int code = http;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (code != 202) {
+                            payResult.setText("فشل إرسال التمريرة (HTTP " + code + ") — تحقق من التوكن");
+                            return;
+                        }
+                        if (dec == null) {
+                            payResult.setText("التمريرة قُبلت (202) لكن القرار لم يصل خلال 30ث — راجع نشاط المُصدر");
+                            return;
+                        }
+                        boolean ok = "approved".equals(dec.decision);
+                        payResult.setText((ok ? "✓ موافقة" : "✗ رفض")
+                                + " — " + dec.reason + "\nالبطاقة: •••• " + card.last4
+                                + "  المبلغ: " + amount);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private IssuerApi.IssuerCard findCard(String id) {
+        for (IssuerApi.IssuerCard ic : issuerCards) {
+            if (ic.id.equals(id)) return ic;
+        }
+        return null;
+    }
+
+    private int countDecisions(String host, String token, String cardId) {
+        IssuerApi.LogResult lr = IssuerApi.fetchLog(host, token);
+        int n = 0;
+        for (int i = 0; i < lr.entries.size(); i++) {
+            if (cardId.equals(lr.entries.get(i).cardId)) n++;
+        }
+        return n;
     }
 
     /** جلب توكنات بطاقة وعرضها في السطر المخصص لها */

@@ -13,10 +13,11 @@ import java.util.List;
 
 /**
  * عميل مُصدرنا — العقد الموثق من issuer_core.py:
- * GET  /issuer/cards                  (X-Issuer-Token) → {"data":[…]}
- * GET  /issuer/cards/{id}/wallet_tokens → مصفوفة عارية (عقد موثق حيًا)
- * POST /issuer/cards/{id}/provision_wallet_token {"requestor":…} → كائن التوكن.
- * (PAN/CVV مكتومان عند المُصدر بوعي PCI — التوكنة هي الطريق الإنتاجي للبطاقة).
+ * GET  /issuer/cards                  (X-Issuer-Token) → {"data":[…]} (+person_name)
+ * GET  /issuer/cards/{id}/wallet_tokens → مصفوفة عارية
+ * POST /issuer/cards/{id}/provision_wallet_token {"requestor":…} → كائن التوكن
+ * POST /issuer/simulate/purchase {"card_id","amount"} → 202 ثم القرار في /issuer/log
+ * GET  /issuer/log → {"data":[…]} آخر 20 سطرًا (منها قرارات cale)
  */
 public class IssuerApi {
 
@@ -55,6 +56,20 @@ public class IssuerApi {
         public String error;
         public String tokenId = "";
         public String requestor = "";
+    }
+
+    /** سطر قرار من سجل المُصدر */
+    public static class LogEntry {
+        public String cardId = "";
+        public String amount = "";
+        public String decision = "";
+        public String reason = "";
+    }
+
+    public static class LogResult {
+        public int http;
+        public String error;
+        public List<LogEntry> entries = new ArrayList<LogEntry>();
     }
 
     private static String _read(HttpURLConnection c, int code) throws Exception {
@@ -161,6 +176,66 @@ public class IssuerApi {
                 r.requestor = tsp == null ? "" : tsp.optString("token_requestor_name", "");
             } else {
                 r.error = body.length() > 200 ? body.substring(0, 200) : body;
+            }
+        } catch (Exception e) {
+            r.error = String.valueOf(e);
+        } finally {
+            if (c != null) c.disconnect();
+        }
+        return r;
+    }
+
+    /** POST /issuer/simulate/purchase — 202 يعني أن TP قبلت التمريرة */
+    public static int simulatePurchase(String host, String token,
+                                       String cardId, String amount) {
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL(_host(host) + "/issuer/simulate/purchase");
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestProperty("X-Issuer-Token", token == null ? "" : token);
+            c.setDoOutput(true);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(20000);
+            byte[] payload = new JSONObject()
+                    .put("card_id", cardId)
+                    .put("amount", amount)
+                    .toString().getBytes("UTF-8");
+            OutputStream os = c.getOutputStream();
+            os.write(payload);
+            os.close();
+            return c.getResponseCode();
+        } catch (Exception e) {
+            return -1;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /** GET /issuer/log — آخر القرارات (cale) وأحداث المُصدر */
+    public static LogResult fetchLog(String host, String token) {
+        LogResult r = new LogResult();
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL(_host(host) + "/issuer/log");
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestProperty("X-Issuer-Token", token == null ? "" : token);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            r.http = c.getResponseCode();
+            JSONObject j = new JSONObject(_read(c, r.http));
+            JSONArray data = j.optJSONArray("data");
+            if (data != null) {
+                for (int i = 0; i < data.length(); i++) {
+                    JSONObject o = data.getJSONObject(i);
+                    LogEntry e = new LogEntry();
+                    e.cardId = o.optString("card_id", "");
+                    e.amount = o.optString("amount", "");
+                    e.decision = o.optString("decision", "");
+                    e.reason = o.optString("reason", "");
+                    r.entries.add(e);
+                }
             }
         } catch (Exception e) {
             r.error = String.valueOf(e);
