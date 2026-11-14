@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
     private Button readBtn, fillBtn;
     private TextView readerStatus, readerDump;
     private EmvReader.ReadResult lastRead;
+    private boolean readerOn = false;
     private NfcAdapter nfc;
     private final Handler readHandler = new Handler();
     private List<IssuerApi.IssuerCard> issuerCards = new ArrayList<IssuerApi.IssuerCard>();
@@ -527,13 +528,44 @@ public class MainActivity extends Activity {
     // ===== القارئ: NFC reader mode + دورة EMV كاملة =====
     private final NfcAdapter.ReaderCallback readCb = new NfcAdapter.ReaderCallback() {
         @Override
-        public void onTagDiscovered(Tag tag) {
+        public void onTagDiscovered(final Tag tag) {
+            // سطر خام فوري قبل أي حوار — هذا يثبت أن الوسم وصل أصلًا
+            StringBuilder hdr = new StringBuilder();
+            try {
+                hdr.append("== وسم جديد ==\nUID: ");
+                StringBuilder ub = new StringBuilder();
+                for (byte b : tag.getId()) ub.append(String.format("%02X", b));
+                hdr.append(ub).append("\nالتقنيات: ");
+                for (String t : tag.getTechList()) hdr.append(t).append(" ");
+            } catch (Exception e) {
+                hdr.append("خطأ وسم: ").append(e);
+            }
+            final String head = hdr.toString();
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    readerDump.setText(head);
+                }
+            });
             final IsoDep iso = IsoDep.get(tag);
             if (iso == null) {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        readerStatus.setText("الوسم ليس بطاقة ISO-DEP");
+                        readerStatus.setText("الوسم ليس ISO-DEP — راجع قائمة التقنيات أعلاه");
+                    }
+                });
+                return;
+            }
+            try {
+                iso.connect();
+                iso.setTimeout(15000);
+            } catch (Exception e) {
+                final String es = "فشل connect: " + e;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        readerStatus.setText(es);
                     }
                 });
                 return;
@@ -541,33 +573,46 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    readerStatus.setText("… جارٍ قراءة الشريحة (لا تُبعد البطاقة)");
+                    readerStatus.setText("… حوار EMV جارٍ (لا تُبعد البطاقة)");
                 }
             });
-            final EmvReader.ReadResult res = EmvReader.read(iso);
-            runOnUiThread(new Runnable() {
+            // القراءة في خيط مستقل — الواجهة لا تتجمد ولا يُقطع الحوار
+            new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    stopReader();
-                    lastRead = res;
-                    readerDump.setText(res.log.toString());
-                    if (res.ok) {
-                        String mm = res.expiry.length() == 4
-                                ? res.expiry.substring(2) + "/" + res.expiry.substring(0, 2)
-                                : res.expiry;
-                        readerStatus.setText("✓ " + res.aidName + " — بطاقة •••• "
-                                + (res.pan.length() >= 4 ? res.pan.substring(res.pan.length() - 4) : "?")
-                                + " — انتهاء " + mm
-                                + (res.atc.isEmpty() ? "" : " — ATC " + res.atc));
-                        fillBtn.setEnabled(true);
-                        Toast.makeText(MainActivity.this, "قُرئت البطاقة محليًا — جاهزة للتعبئة",
-                                Toast.LENGTH_SHORT).show();
-                    } else {
-                        readerStatus.setText("خطأ القراءة: " + res.error);
-                        fillBtn.setEnabled(false);
+                    final EmvReader.ReadResult res = EmvReader.read(iso);
+                    try {
+                        iso.close();
+                    } catch (Exception ignored) {
                     }
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            lastRead = res;
+                            readerDump.setText(head + "\n" + res.log.toString());
+                            if (res.ok) {
+                                String mm = res.expiry.length() == 4
+                                        ? res.expiry.substring(2) + "/" + res.expiry.substring(0, 2)
+                                        : res.expiry;
+                                readerStatus.setText("✓ " + res.aidName
+                                        + " — بطاقة •••• "
+                                        + (res.pan.length() >= 4 ? res.pan.substring(res.pan.length() - 4) : "?")
+                                        + " — انتهاء " + mm
+                                        + (res.atc.isEmpty() ? "" : " — ATC " + res.atc)
+                                        + (res.tech.isEmpty() ? "" : " — ATS " + res.tech));
+                                fillBtn.setEnabled(true);
+                                Toast.makeText(MainActivity.this,
+                                        "قُرئت البطاقة محليًا — جاهزة للتعبئة",
+                                        Toast.LENGTH_SHORT).show();
+                            } else {
+                                readerStatus.setText("خطأ القراءة: " + res.error
+                                        + " — راجع السجل الخام أدناه");
+                                fillBtn.setEnabled(false);
+                            }
+                        }
+                    });
                 }
-            });
+            }).start();
         }
     };
 
@@ -575,11 +620,16 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             stopReader();
-            readerStatus.setText("انتهت مهلة الثلاثين ثانية — اضغط القراءة وقرّب البطاقة مجددًا");
+            readerStatus.setText("انتهت مهلة الدقيقتين — اضغط الإيقاف ثم القراءة مجددًا");
         }
     };
 
     private void startReader() {
+        if (readerOn) { // زر تبديل: إيقاف فوري
+            stopReader();
+            readerStatus.setText("أُوقف القارئ يدويًا");
+            return;
+        }
         nfc = nfc == null ? NfcAdapter.getDefaultAdapter(this) : nfc;
         if (nfc == null) {
             readerStatus.setText("هذا الجهاز بلا NFC");
@@ -589,12 +639,16 @@ public class MainActivity extends Activity {
         lastRead = null;
         fillBtn.setEnabled(false);
         nfc.enableReaderMode(this, readCb, NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK, null);
-        readerStatus.setText("قرّب البطاقة من ظهر الجهاز… (30 ثانية)");
-        readHandler.postDelayed(stopRunnable, 30000);
+        readerOn = true;
+        readBtn.setText("إيقاف القارئ");
+        readerStatus.setText("قرّب البطاقة من ظهر الجهاز… (نافذة دقيقتين، ولا يتوقف بعد أول بطاقة)");
+        readHandler.postDelayed(stopRunnable, 120000);
     }
 
     private void stopReader() {
         readHandler.removeCallbacks(stopRunnable);
+        readerOn = false;
+        readBtn.setText("قراءة بطاقة — قرّبها من ظهر الجهاز");
         if (nfc != null) {
             try {
                 nfc.disableReaderMode(this);
