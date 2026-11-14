@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">محفظة nexo-tms</string>
+    <string name="hce_service_desc">خدمة الدفع NFC لمحفظة nexo-tms</string>
+    <string name="payment_aids_desc">بطاقات الدفع</string>
+</resources>

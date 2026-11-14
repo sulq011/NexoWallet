@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/hce_service_desc"
+    android:requireDeviceUnlock="false">
+    <!-- بطاقة EMV Contactless: توجيه أوامر SELECT من أجهزة POS الحقيقية إلى خدمتنا -->
+    <aid-group android:category="payment"
+        android:description="@string/payment_aids_desc">
+        <aid-filter android:name="325041592E5359532E4444463031" />
+        <aid-filter android:name="315041592E5359532E4444463031" />
+        <aid-filter android:name="A0000002281010" />
+        <aid-filter android:name="A000000228" />
+        <aid-filter android:name="A0000000031010" />
+        <aid-filter android:name="A000000003" />
+        <aid-filter android:name="A0000000041010" />
+        <aid-filter android:name="A000000004" />
+    </aid-group>
+</host-apdu-service>
