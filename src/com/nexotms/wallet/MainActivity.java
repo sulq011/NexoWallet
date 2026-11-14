@@ -18,8 +18,8 @@ import android.widget.Toast;
 import java.util.List;
 
 /**
- * محفظة nexo-tms — بطاقات مُصدرنا (عرض حي من الواجهة) + بطاقات الدفع NFC.
- * واجهة برمجية كاملة بلا موارد تخطيط — مثل بقية تطبيقات المعمل.
+ * محفظة nexo-tms — بطاقات مُصدرنا (عرض حي + توكنات المحفظة + التزويد عبر المُصدر)
+ * + بطاقات الدفع NFC. واجهة برمجية كاملة بلا موارد تخطيط — مثل بقية تطبيقات المعمل.
  */
 public class MainActivity extends Activity {
 
@@ -129,6 +129,12 @@ public class MainActivity extends Activity {
                 + "بطاقة بلا BIN مرخّص: أي POS حقيقي يقرأها EMV كاملة ثم يأتي الرفض من الشبكة الحقيقية.");
         root.addView(note);
 
+        TextView dwtNote = new TextView(this);
+        dwtNote.setTextSize(11);
+        dwtNote.setPadding(0, px(6), 0, 0);
+        dwtNote.setText("التوكنة (DPAN): المُصدر يبدأها عند الشبكة — البطاقة تدخل المحفظة الرقمية بلا كشف PAN أبدًا.");
+        root.addView(dwtNote);
+
         TextView nfcHint = new TextView(this);
         nfcHint.setTextSize(11);
         nfcHint.setPadding(0, px(10), 0, 0);
@@ -176,11 +182,90 @@ public class MainActivity extends Activity {
                         issuerStatus.setText("✓ " + r.cards.size() + " بطاقة من المُصدر");
                         for (final IssuerApi.IssuerCard ic : r.cards) {
                             TextView tv = new TextView(MainActivity.this);
-                            tv.setText(ic.display() + "\n(عرض فقط — PAN مكتوم عند المُصدر)");
+                            tv.setText(ic.display());
                             tv.setTextSize(13);
-                            tv.setPadding(px(10), px(10), px(10), px(10));
+                            tv.setPadding(px(10), px(10), px(10), 0);
                             issuerList.addView(tv);
+
+                            // توكنات المحفظة لهذه البطاقة (مسار DPAN)
+                            final TextView tokView = new TextView(MainActivity.this);
+                            tokView.setTextSize(12);
+                            tokView.setPadding(px(10), px(4), px(10), px(4));
+                            tokView.setText("توكنات المحفظة: …");
+                            issuerList.addView(tokView);
+                            loadTokens(ic.id, tokView);
+
+                            final Button provBtn = new Button(MainActivity.this);
+                            provBtn.setTextSize(12);
+                            provBtn.setText("توكنة إلى محفظة رقمية (Google Pay)");
+                            provBtn.setOnClickListener(new View.OnClickListener() {
+                                @Override
+                                public void onClick(View v) {
+                                    provisionCard(ic.id, provBtn, tokView);
+                                }
+                            });
+                            issuerList.addView(provBtn);
                         }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** جلب توكنات بطاقة وعرضها في السطر المخصص لها */
+    private void loadTokens(final String cardId, final TextView view) {
+        final String host = hostEdit.getText().toString().trim();
+        final String token = tokenEdit.getText().toString().trim();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final IssuerApi.TokensResult tr = IssuerApi.fetchTokens(host, token, cardId);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (tr.error != null) {
+                            view.setText("توكنات المحفظة: خطأ " + tr.error);
+                            return;
+                        }
+                        if (tr.lines.isEmpty()) {
+                            view.setText("توكنات المحفظة: لا توكنات بعد");
+                            return;
+                        }
+                        StringBuilder sb = new StringBuilder("توكنات المحفظة:");
+                        for (String s : tr.lines) sb.append("\n• ").append(s);
+                        view.setText(sb.toString());
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** التزويد عبر المُصدر: POST provision_wallet_token ثم تحديث السطر */
+    private void provisionCard(final String cardId, final Button btn, final TextView view) {
+        final String host = hostEdit.getText().toString().trim();
+        final String token = tokenEdit.getText().toString().trim();
+        btn.setEnabled(false);
+        view.setText("… جارٍ التزويد عبر المُصدر (حتى 30ث)");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final IssuerApi.ProvisionResult pr =
+                        IssuerApi.provision(host, token, cardId, "android_pay");
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        btn.setEnabled(true);
+                        if (pr.error != null) {
+                            view.setText("خطأ التزويد: " + pr.error);
+                        } else if (pr.http != 200) {
+                            view.setText("HTTP " + pr.http + " — " + pr.error);
+                        } else {
+                            view.setText("✓ توكن جديد: " + pr.requestor + " — " + pr.tokenId);
+                            Toast.makeText(MainActivity.this,
+                                    "تمت التوكنة: " + pr.tokenId,
+                                    Toast.LENGTH_LONG).show();
+                        }
+                        loadTokens(cardId, view);
                     }
                 });
             }
@@ -233,8 +318,7 @@ public class MainActivity extends Activity {
                 if (idx >= 0 && idx < cards.size()) {
                     store.setSelectedPan(cards.get(idx).pan);
                     Toast.makeText(MainActivity.this,
-                            "بطاقة الدفع NFC الآن: •••• " + cards.get(idx).last4(),
-                            Toast.LENGTH_SHORT).show();
+                            "بطاقة الدفع NFC الآن: •••• " + cards.get(idx).last4(), Toast.LENGTH_SHORT).show();
                 }
             }
         });
