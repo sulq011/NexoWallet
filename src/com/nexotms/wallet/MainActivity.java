@@ -2,6 +2,7 @@ package com.nexotms.wallet;
 
 import android.app.Activity;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.View;
@@ -15,11 +16,13 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * محفظة nexo-tms — بطاقات مُصدرنا (عرض حي + توكنات المحفظة + التزويد عبر المُصدر)
- * + بطاقات الدفع NFC. واجهة برمجية كاملة بلا موارد تخطيط — مثل بقية تطبيقات المعمل.
+ * محفظة nexo-tms — محفظة حقيقية:
+ * بطاقات المُصدر كبلاطات بنكية (اسم الحامل + آخر4 + الحالة) مع التوكنات
+ * والتزويد وتحديد البطاقة الافتراضية للدفع — إضافة إلى بطاقات الدفع NFC.
  */
 public class MainActivity extends Activity {
 
@@ -27,6 +30,7 @@ public class MainActivity extends Activity {
     private LinearLayout issuerList, myCardsList;
     private EditText hostEdit, tokenEdit, panEdit, expEdit, cvvEdit, holderEdit;
     private TextView issuerStatus;
+    private List<IssuerApi.IssuerCard> issuerCards = new ArrayList<IssuerApi.IssuerCard>();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -46,8 +50,8 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
 
-        // ===== 1) مُصدرنا =====
-        root.addView(section("🏦 بطاقات مُصدرنا (السيرفر الحالي)"));
+        // ===== 1) محفظتي — بطاقات المُصدر =====
+        root.addView(section("🏦 محفظتي — بطاقاتي من المُصدر"));
 
         hostEdit = new EditText(this);
         hostEdit.setHint("المضيف (https://…)");
@@ -61,7 +65,7 @@ public class MainActivity extends Activity {
         root.addView(tokenEdit);
 
         Button loadBtn = new Button(this);
-        loadBtn.setText("تحميل البطاقات من المُصدر");
+        loadBtn.setText("تحميل محفظتي");
         root.addView(loadBtn);
         loadBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -122,23 +126,11 @@ public class MainActivity extends Activity {
             }
         });
 
-        TextView note = new TextView(this);
-        note.setTextSize(11);
-        note.setPadding(0, px(8), 0, 0);
-        note.setText("حد الصدق: PAN/CVV مكتومان عند مُصدرنا (وعي PCI) — أدخل بيانات بطاقتك كما تظهر في لوحة المُصدر.\n"
-                + "بطاقة بلا BIN مرخّص: أي POS حقيقي يقرأها EMV كاملة ثم يأتي الرفض من الشبكة الحقيقية.");
-        root.addView(note);
-
-        TextView dwtNote = new TextView(this);
-        dwtNote.setTextSize(11);
-        dwtNote.setPadding(0, px(6), 0, 0);
-        dwtNote.setText("التوكنة (DPAN): المُصدر يبدأها عند الشبكة — البطاقة تدخل المحفظة الرقمية بلا كشف PAN أبدًا.");
-        root.addView(dwtNote);
-
         TextView nfcHint = new TextView(this);
         nfcHint.setTextSize(11);
         nfcHint.setPadding(0, px(10), 0, 0);
-        nfcHint.setText("تفعيل الدفع NFC: إعدادات الجهاز ← NFC ← Tap & pay ← اختر «محفظة nexo-tms»، ثم قرّب الجهاز من القارئ.");
+        nfcHint.setText("بطاقات المُصدر توكنية (لا تحمل PAN بوعي PCI) — الدفع التلامسي الفعلي عند القارئ من هذا القسم ببطاقة ببيانات كاملة.\n"
+                + "تفعيل الدفع NFC: إعدادات الجهاز ← NFC ← Tap & pay ← اختر «محفظة nexo-tms».");
         root.addView(nfcHint);
 
         renderMyCards();
@@ -162,7 +154,7 @@ public class MainActivity extends Activity {
         final String token = tokenEdit.getText().toString().trim();
         store.setHost(host);
         store.setToken(token);
-        issuerStatus.setText("… جارٍ الجلب من المُصدر");
+        issuerStatus.setText("… جارٍ جلب محفظتك من المُصدر");
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -170,7 +162,6 @@ public class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        issuerList.removeAllViews();
                         if (r.error != null) {
                             issuerStatus.setText("خطأ: " + r.error);
                             return;
@@ -179,37 +170,112 @@ public class MainActivity extends Activity {
                             issuerStatus.setText("HTTP " + r.http + " — تحقق من التوكن");
                             return;
                         }
-                        issuerStatus.setText("✓ " + r.cards.size() + " بطاقة من المُصدر");
-                        for (final IssuerApi.IssuerCard ic : r.cards) {
-                            TextView tv = new TextView(MainActivity.this);
-                            tv.setText(ic.display());
-                            tv.setTextSize(13);
-                            tv.setPadding(px(10), px(10), px(10), 0);
-                            issuerList.addView(tv);
-
-                            // توكنات المحفظة لهذه البطاقة (مسار DPAN)
-                            final TextView tokView = new TextView(MainActivity.this);
-                            tokView.setTextSize(12);
-                            tokView.setPadding(px(10), px(4), px(10), px(4));
-                            tokView.setText("توكنات المحفظة: …");
-                            issuerList.addView(tokView);
-                            loadTokens(ic.id, tokView);
-
-                            final Button provBtn = new Button(MainActivity.this);
-                            provBtn.setTextSize(12);
-                            provBtn.setText("توكنة إلى محفظة رقمية (Google Pay)");
-                            provBtn.setOnClickListener(new View.OnClickListener() {
-                                @Override
-                                public void onClick(View v) {
-                                    provisionCard(ic.id, provBtn, tokView);
-                                }
-                            });
-                            issuerList.addView(provBtn);
-                        }
+                        issuerCards = r.cards;
+                        renderIssuerCards();
                     }
                 });
             }
         }).start();
+    }
+
+    /** رسم المحفظة: بلاطة بنكية لكل بطاقة مُصدرة */
+    private void renderIssuerCards() {
+        issuerList.removeAllViews();
+        if (issuerCards.isEmpty()) {
+            issuerStatus.setText("لا بطاقات عند المُصدر");
+            return;
+        }
+        String defId = store.getDefaultIssuerCard();
+        issuerStatus.setText("✓ محفظتك: " + issuerCards.size() + " بطاقة");
+        for (final IssuerApi.IssuerCard ic : issuerCards) {
+            boolean isDefault = ic.id.equals(defId);
+
+            // ==== البلاطة ====
+            LinearLayout tile = new LinearLayout(this);
+            tile.setOrientation(LinearLayout.VERTICAL);
+            GradientDrawable bg = new GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    isDefault
+                        ? new int[]{0xFF0E5E3F, 0xFF0A5C74}
+                        : new int[]{0xFF1B2A6B, 0xFF0E7C86});
+            float r = px(14);
+            bg.setCornerRadii(new float[]{r, r, r, r, r, r, r, r});
+            tile.setBackground(bg);
+            tile.setPadding(px(18), px(14), px(18), px(14));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = px(8);
+            lp.topMargin = px(4);
+            tile.setLayoutParams(lp);
+
+            String holder = (ic.holderName == null || ic.holderName.isEmpty())
+                    ? "بطاقة من مُصدرنا" : ic.holderName;
+            TextView name = new TextView(this);
+            name.setText(holder);
+            name.setTextColor(0xFFFFFFFF);
+            name.setTextSize(15);
+            name.setTypeface(Typeface.DEFAULT_BOLD);
+            tile.addView(name);
+
+            TextView num = new TextView(this);
+            num.setText("•••• " + ic.last4);
+            num.setTextColor(0xFFFFFFFF);
+            num.setTextSize(24);
+            num.setTypeface(Typeface.DEFAULT_BOLD);
+            tile.addView(num);
+
+            TextView meta = new TextView(this);
+            String exp = ic.expiration == null ? "" : ic.expiration;
+            String mm = exp.length() == 4 ? exp.substring(0, 2) + "/" + exp.substring(2) : exp;
+            meta.setText("انتهاء " + mm + "  —  " + ic.status
+                    + (isDefault ? "  ✓ الافتراضية للدفع" : ""));
+            meta.setTextColor(0xCCFFFFFF);
+            meta.setTextSize(12);
+            tile.addView(meta);
+
+            TextView acct = new TextView(this);
+            acct.setText("الحساب: " + ic.accountId);
+            acct.setTextColor(0x99FFFFFF);
+            acct.setTextSize(10);
+            tile.addView(acct);
+
+            issuerList.addView(tile);
+
+            // ==== توكنات المحفظة ====
+            final TextView tokView = new TextView(this);
+            tokView.setTextSize(12);
+            tokView.setPadding(px(10), px(4), px(10), px(2));
+            tokView.setText("توكنات المحفظة: …");
+            issuerList.addView(tokView);
+            loadTokens(ic.id, tokView);
+
+            // ==== اختيار البطاقة الافتراضية للدفع ====
+            Button defBtn = new Button(this);
+            defBtn.setTextSize(12);
+            defBtn.setText(isDefault
+                    ? "✓ البطاقة الافتراضية للدفع"
+                    : "استخدامها كبطاقة افتراضية للدفع");
+            defBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    store.setDefaultIssuerCard(ic.id);
+                    renderIssuerCards();
+                }
+            });
+            issuerList.addView(defBtn);
+
+            // ==== التزويد (توكنة إلى محفظة رقمية) ====
+            Button provBtn = new Button(this);
+            provBtn.setTextSize(12);
+            provBtn.setText("توكنة إلى محفظة رقمية (Google Pay)");
+            provBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    provisionCard(ic.id, provBtn, tokView);
+                }
+            });
+            issuerList.addView(provBtn);
+        }
     }
 
     /** جلب توكنات بطاقة وعرضها في السطر المخصص لها */

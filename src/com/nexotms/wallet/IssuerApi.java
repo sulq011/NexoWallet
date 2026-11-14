@@ -26,6 +26,7 @@ public class IssuerApi {
         public String status = "";
         public String expiration = "";
         public String accountId = "";
+        public String holderName = "";
 
         public String display() {
             String exp = expiration == null ? "" : expiration;
@@ -91,6 +92,9 @@ public class IssuerApi {
                     ic.status = o.optString("status", "");
                     ic.expiration = o.optString("expiration", "");
                     ic.accountId = o.optString("account_id", "");
+                    ic.holderName = o.optString("person_name",
+                            o.optString("holder_name",
+                                    o.optString("name", "")));
                     r.cards.add(ic);
                 }
             }

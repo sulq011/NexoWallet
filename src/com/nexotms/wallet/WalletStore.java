@@ -74,4 +74,13 @@ public class WalletStore {
     public void setToken(String t) {
         prefs.edit().putString("token", t).apply();
     }
+
+    /** البطاقة المُصدَرة المختارة كافتراضية للدفع */
+    public String getDefaultIssuerCard() {
+        return prefs.getString("def_issuer", "");
+    }
+
+    public void setDefaultIssuerCard(String cardId) {
+        prefs.edit().putString("def_issuer", cardId).apply();
+    }
 }
