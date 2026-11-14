@@ -3,7 +3,11 @@ package com.nexotms.wallet;
 import android.app.Activity;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.nfc.NfcAdapter;
+import android.nfc.Tag;
+import android.nfc.tech.IsoDep;
 import android.os.Bundle;
+import android.os.Handler;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
@@ -32,6 +36,11 @@ public class MainActivity extends Activity {
     private EditText hostEdit, tokenEdit, panEdit, expEdit, cvvEdit, holderEdit;
     private EditText payAmountEdit;
     private TextView issuerStatus, defCardLabel, payResult;
+    private Button readBtn, fillBtn;
+    private TextView readerStatus, readerDump;
+    private EmvReader.ReadResult lastRead;
+    private NfcAdapter nfc;
+    private final Handler readHandler = new Handler();
     private List<IssuerApi.IssuerCard> issuerCards = new ArrayList<IssuerApi.IssuerCard>();
 
     @Override
@@ -113,6 +122,48 @@ public class MainActivity extends Activity {
         payResult.setPadding(0, px(6), 0, px(6));
         root.addView(payResult);
 
+        // ===== 2ب) قراءة بطاقة NFC (قارئ المعمل) =====
+        root.addView(section("📖 قراءة بطاقة NFC (قارئ)"));
+
+        readBtn = new Button(this);
+        readBtn.setText("قراءة بطاقة — قرّبها من ظهر الجهاز");
+        root.addView(readBtn);
+        readBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startReader();
+            }
+        });
+
+        readerStatus = new TextView(this);
+        readerStatus.setTextSize(12);
+        readerStatus.setPadding(0, px(4), 0, px(4));
+        root.addView(readerStatus);
+
+        readerDump = new TextView(this);
+        readerDump.setTextSize(10);
+        readerDump.setPadding(px(6), px(6), px(6), px(6));
+        readerDump.setText("");
+        root.addView(readerDump);
+
+        fillBtn = new Button(this);
+        fillBtn.setText("تعبئة نموذج الإضافة من القراءة");
+        fillBtn.setEnabled(false);
+        root.addView(fillBtn);
+        fillBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                fillFormFromRead();
+            }
+        });
+
+        TextView readNote = new TextView(this);
+        readNote.setTextSize(11);
+        readNote.setPadding(0, px(6), 0, 0);
+        readNote.setText("القراءة محلية بحتة — لا يُرسل أي بايت لأي سيرفر. بطاقاتك الملغاة يجيب رقاقها محليًا (الإلغاء عند الشبكة لا عند الشريحة) — PAN/الصلاحية/track2 تُستخرج بEMV كامل وتعبّئ نموذج الإضافة لتدخل حلقة معملنا (HCE ← POS المعمل).");
+        root.addView(readNote);
+
+
         // ===== 3) بطاقاتي للدفع NFC =====
         root.addView(section("📲 بطاقاتي للدفع NFC"));
 
@@ -165,6 +216,12 @@ public class MainActivity extends Activity {
 
         updateDefCardLabel();
         renderMyCards();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopReader();
     }
 
     private TextView section(String s) {
@@ -465,6 +522,99 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // ===== القارئ: NFC reader mode + دورة EMV كاملة =====
+    private final NfcAdapter.ReaderCallback readCb = new NfcAdapter.ReaderCallback() {
+        @Override
+        public void onTagDiscovered(Tag tag) {
+            final IsoDep iso = IsoDep.get(tag);
+            if (iso == null) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        readerStatus.setText("الوسم ليس بطاقة ISO-DEP");
+                    }
+                });
+                return;
+            }
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    readerStatus.setText("… جارٍ قراءة الشريحة (لا تُبعد البطاقة)");
+                }
+            });
+            final EmvReader.ReadResult res = EmvReader.read(iso);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    stopReader();
+                    lastRead = res;
+                    readerDump.setText(res.log.toString());
+                    if (res.ok) {
+                        String mm = res.expiry.length() == 4
+                                ? res.expiry.substring(2) + "/" + res.expiry.substring(0, 2)
+                                : res.expiry;
+                        readerStatus.setText("✓ " + res.aidName + " — بطاقة •••• "
+                                + (res.pan.length() >= 4 ? res.pan.substring(res.pan.length() - 4) : "?")
+                                + " — انتهاء " + mm
+                                + (res.atc.isEmpty() ? "" : " — ATC " + res.atc));
+                        fillBtn.setEnabled(true);
+                        Toast.makeText(MainActivity.this, "قُرئت البطاقة محليًا — جاهزة للتعبئة",
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        readerStatus.setText("خطأ القراءة: " + res.error);
+                        fillBtn.setEnabled(false);
+                    }
+                }
+            });
+        }
+    };
+
+    private final Runnable stopRunnable = new Runnable() {
+        @Override
+        public void run() {
+            stopReader();
+            readerStatus.setText("انتهت مهلة الثلاثين ثانية — اضغط القراءة وقرّب البطاقة مجددًا");
+        }
+    };
+
+    private void startReader() {
+        nfc = nfc == null ? NfcAdapter.getDefaultAdapter(this) : nfc;
+        if (nfc == null) {
+            readerStatus.setText("هذا الجهاز بلا NFC");
+            return;
+        }
+        readerDump.setText("");
+        lastRead = null;
+        fillBtn.setEnabled(false);
+        nfc.enableReaderMode(this, readCb, NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK, null);
+        readerStatus.setText("قرّب البطاقة من ظهر الجهاز… (30 ثانية)");
+        readHandler.postDelayed(stopRunnable, 30000);
+    }
+
+    private void stopReader() {
+        readHandler.removeCallbacks(stopRunnable);
+        if (nfc != null) {
+            try {
+                nfc.disableReaderMode(this);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void fillFormFromRead() {
+        if (lastRead == null || !lastRead.ok) {
+            Toast.makeText(this, "لا قراءة صالحة", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        panEdit.setText(lastRead.pan);
+        if (lastRead.expiry.length() == 4) {
+            expEdit.setText(lastRead.expiry.substring(2) + "/" + lastRead.expiry.substring(0, 2));
+        }
+        cvvEdit.requestFocus();
+        Toast.makeText(this, "اكتملت التعبئة — أدخل CVV واسم الحامل ثم اضغط إضافة البطاقة",
+                Toast.LENGTH_LONG).show();
     }
 
     private void addCard() {
