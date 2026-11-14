@@ -58,6 +58,19 @@ public class IssuerApi {
         public String requestor = "";
     }
 
+    /** نتيجة تفعيل بطاقة فيزيائية (POST /issuer/physical/activate) */
+    public static class ActivationResult {
+        public int http;
+        public String error;
+        public String cardId = "";
+        public String last4 = "";
+        public String status = "";
+        public boolean pinIsSet;
+        public String activatedAt = "";
+        public int attempts;
+        public boolean locked;
+    }
+
     /** سطر قرار من سجل المُصدر */
     public static class LogEntry {
         public String cardId = "";
@@ -211,6 +224,47 @@ public class IssuerApi {
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    /** POST /issuer/physical/activate — تفعيل بطاقة فيزيائية برمز التفعيل */
+    public static ActivationResult activatePhysical(String host, String token,
+            String code, String last4, String expiry) {
+        ActivationResult r = new ActivationResult();
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL(_host(host) + "/issuer/physical/activate");
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestProperty("X-Issuer-Token", token == null ? "" : token);
+            c.setDoOutput(true);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(20000);
+            byte[] payload = new JSONObject()
+                    .put("activation_code", code)
+                    .put("last4", last4)
+                    .put("expiry", expiry)
+                    .toString().getBytes("UTF-8");
+            OutputStream os = c.getOutputStream();
+            os.write(payload);
+            os.close();
+            r.http = c.getResponseCode();
+            String body = _read(c, r.http);
+            JSONObject j = new JSONObject(body);
+            r.error = j.optString("error", "");
+            r.cardId = j.optString("card_id", "");
+            r.last4 = j.optString("last4", "");
+            r.status = j.optString("status", "");
+            r.pinIsSet = j.optBoolean("pin_is_set", false);
+            r.activatedAt = j.optString("activated_at", "");
+            r.attempts = j.optInt("attempts", 0);
+            r.locked = j.optBoolean("locked", false);
+        } catch (Exception e) {
+            r.error = String.valueOf(e);
+        } finally {
+            if (c != null) c.disconnect();
+        }
+        return r;
     }
 
     /** GET /issuer/log — آخر القرارات (cale) وأحداث المُصدر */

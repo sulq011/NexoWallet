@@ -1,8 +1,10 @@
 package com.nexotms.wallet;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.nfc.NfcAdapter;
 import android.nfc.Tag;
 import android.nfc.tech.IsoDep;
@@ -35,6 +37,8 @@ public class MainActivity extends Activity {
     private LinearLayout issuerList, myCardsList;
     private EditText hostEdit, tokenEdit, panEdit, expEdit, cvvEdit, holderEdit;
     private EditText payAmountEdit;
+    private EditText activationCodeEdit, actLast4Edit, actExpiryEdit;
+    private TextView activationResult;
     private TextView issuerStatus, defCardLabel, payResult;
     private Button readBtn, fillBtn;
     private TextView readerStatus, readerDump;
@@ -94,6 +98,46 @@ public class MainActivity extends Activity {
         issuerList = new LinearLayout(this);
         issuerList.setOrientation(LinearLayout.VERTICAL);
         root.addView(issuerList);
+
+        // ===== 1ب) تفعيل بطاقة فيزيائية (نمط برق — لمسة NFC) =====
+        root.addView(section("💳 تفعيل بطاقة فيزيائية"));
+
+        activationCodeEdit = new EditText(this);
+        activationCodeEdit.setHint("رمز التفعيل (من وسم البطاقة أو المُصدر)");
+        activationCodeEdit.setInputType(
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        root.addView(activationCodeEdit);
+
+        actLast4Edit = new EditText(this);
+        actLast4Edit.setHint("آخر 4 أرقام من البطاقة");
+        actLast4Edit.setInputType(InputType.TYPE_CLASS_NUMBER);
+        root.addView(actLast4Edit);
+
+        actExpiryEdit = new EditText(this);
+        actExpiryEdit.setHint("الانتهاء MMYY (مثال 1130)");
+        actExpiryEdit.setInputType(InputType.TYPE_CLASS_NUMBER);
+        root.addView(actExpiryEdit);
+
+        Button actBtn = new Button(this);
+        actBtn.setText("تفعيل البطاقة الفيزيائية");
+        root.addView(actBtn);
+        actBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                activatePhysicalCard();
+            }
+        });
+
+        activationResult = new TextView(this);
+        activationResult.setTextSize(13);
+        activationResult.setPadding(0, px(6), 0, px(6));
+        root.addView(activationResult);
+
+        TextView actNote = new TextView(this);
+        actNote.setTextSize(11);
+        actNote.setPadding(0, px(6), 0, 0);
+        actNote.setText("لمس بطاقة تحمل وسم nexowallet://activatePhysical?id=… يفتح هذا القسم ويملأ الرمز تلقائيًا — مثل بطاقات برق تمامًا.");
+        root.addView(actNote);
 
         // ===== 2) تجربة دفع على البطاقة الافتراضية =====
         root.addView(section("🧾 تجربة دفع — البطاقة الافتراضية"));
@@ -217,6 +261,83 @@ public class MainActivity extends Activity {
 
         updateDefCardLabel();
         renderMyCards();
+        handleActivationLink(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        handleActivationLink(i);
+    }
+
+    /** استقبال nexowallet://activatePhysical?id=CODE — تعبئة الرمز مباشرة */
+    private void handleActivationLink(Intent i) {
+        if (i == null || !Intent.ACTION_VIEW.equals(i.getAction())) return;
+        Uri d = i.getData();
+        if (d == null) return;
+        String sch = d.getScheme() == null ? "" : d.getScheme().toLowerCase();
+        String hst = d.getHost() == null ? "" : d.getHost().toLowerCase();
+        if (!("nexowallet".equals(sch) && "activatephysical".equals(hst))) return;
+        String code = d.getQueryParameter("id");
+        if (code == null || code.trim().isEmpty()) {
+            Toast.makeText(this, "رابط تفعيل بلا رمز — أدخل الرمز يدويًا",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        activationCodeEdit.setText(code.trim());
+        actLast4Edit.requestFocus();
+        Toast.makeText(this, "وصل رمز تفعيل من وسم البطاقة ✓ — أدخل آخر4 والانتهاء",
+                Toast.LENGTH_LONG).show();
+    }
+
+    /** تفعيل بطاقة فيزيائية عبر نقطة المُصدر المُثبتة */
+    private void activatePhysicalCard() {
+        final String host = hostEdit.getText().toString().trim();
+        final String token = tokenEdit.getText().toString().trim();
+        final String code = activationCodeEdit.getText().toString().trim();
+        final String last4 = actLast4Edit.getText().toString().trim();
+        final String expiry = actExpiryEdit.getText().toString().trim();
+        if (code.isEmpty() || last4.length() != 4) {
+            Toast.makeText(this, "أدخل رمز التفعيل وآخر 4 أرقام", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        store.setHost(host);
+        store.setToken(token);
+        activationResult.setText("… جارٍ تفعيل البطاقة عبر المُصدر");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final IssuerApi.ActivationResult ar =
+                        IssuerApi.activatePhysical(host, token, code, last4, expiry);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (ar.http == 200) {
+                            activationResult.setText("✓ البطاقة •••• " + ar.last4
+                                    + " مفعّلة — الحالة " + ar.status
+                                    + (ar.pinIsSet ? " — PIN مضبوط" : "")
+                                    + "\nفعّلت في: " + ar.activatedAt);
+                            Toast.makeText(MainActivity.this,
+                                    "تفعيل ناجح ✓", Toast.LENGTH_LONG).show();
+                            fetchIssuerCards();
+                        } else if (ar.http == 423) {
+                            activationResult.setText("✗ البطاقة مقفلة بعد 3 محاولات فاشلة (423)");
+                        } else if (ar.http == 409) {
+                            activationResult.setText("البطاقة مفعّلة مسبقًا (409)\n"
+                                    + ar.activatedAt);
+                        } else if (ar.http == 403) {
+                            activationResult.setText("✗ بيانات غير مطابقة (403)"
+                                    + " — محاولات: " + ar.attempts
+                                    + (ar.locked ? " — مقفلة" : ""));
+                        } else {
+                            activationResult.setText("HTTP " + ar.http
+                                    + (ar.error.isEmpty() ? "" : " — " + ar.error));
+                        }
+                    }
+                });
+            }
+        }).start();
     }
 
     @Override
